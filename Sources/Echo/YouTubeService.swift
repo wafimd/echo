@@ -33,23 +33,34 @@ class YouTubeService {
     }
 
     func streamURL(videoId: String) async throws -> URL {
-        guard let url = URL(string: "https://www.youtube.com/youtubei/v1/player") else { throw URLError(.badURL) }
-        var request = URLRequest(url: url)
+        // Try multiple clients in order — iOS client often returns direct URLs,
+        // Android Music is the most reliable fallback.
+        let clients: [[String: Any]] = [
+            ["clientName": "IOS", "clientVersion": "19.29.1", "deviceModel": "iPhone16,2",
+             "osName": "iPhone OS", "osVersion": "17.5.1"],
+            ["clientName": "ANDROID_MUSIC", "clientVersion": "7.11.50",
+             "androidSdkVersion": 30, "osName": "Android", "osVersion": "11"],
+            ["clientName": "IOS_MUSIC", "clientVersion": "7.08.2",
+             "deviceModel": "iPhone16,2", "osName": "iPhone OS", "osVersion": "17.5.1"],
+        ]
+
+        for client in clients {
+            if let url = try? await resolveStream(videoId: videoId, client: client) {
+                return url
+            }
+        }
+        throw URLError(.cannotFindHost)
+    }
+
+    private func resolveStream(videoId: String, client: [String: Any]) async throws -> URL {
+        guard let endpoint = URL(string: "https://www.youtube.com/youtubei/v1/player") else { throw URLError(.badURL) }
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)", forHTTPHeaderField: "User-Agent")
 
         let body: [String: Any] = [
             "videoId": videoId,
-            "context": [
-                "client": [
-                    "clientName": "IOS",
-                    "clientVersion": "19.29.1",
-                    "deviceModel": "iPhone16,2",
-                    "osName": "iPhone OS",
-                    "osVersion": "17.5.1"
-                ]
-            ]
+            "context": ["client": client]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 

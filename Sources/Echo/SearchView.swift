@@ -19,8 +19,19 @@ struct SearchView: View {
                 .background(Color.black)
 
                 if player.currentTrack != nil {
-                    MiniPlayer()
-                        .transition(.move(edge: .bottom))
+                    VStack(spacing: 0) {
+                        if let err = player.errorMessage {
+                            Text(err)
+                                .foregroundStyle(.white)
+                                .font(.caption)
+                                .padding(.horizontal)
+                                .padding(.vertical, 6)
+                                .frame(maxWidth: .infinity)
+                                .background(Color.red.opacity(0.8))
+                        }
+                        MiniPlayer()
+                    }
+                    .transition(.move(edge: .bottom))
                 }
             }
             .navigationTitle("Echo")
