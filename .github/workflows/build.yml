@@ -1,0 +1,66 @@
+name: Build Echo IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_api_key:
+        description: 'YouTube Data API v3 key'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          XCODE=$(ls /Applications/ | grep -E '^Xcode' | sort -V | tail -1)
+          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Inject API key
+        run: |
+          python3 -c "
+          path = 'Sources/Echo/YouTubeService.swift'
+          content = open(path).read()
+          content = content.replace('YOUR_API_KEY', '${{ github.event.inputs.youtube_api_key }}')
+          open(path, 'w').write(content)
+          print('API key injected')
+          "
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project Echo.xcodeproj \
+            -scheme Echo \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath Echo.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tail -30
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -r Echo.xcarchive/Products/Applications/Echo.app Payload/
+          zip -qr Echo.ipa Payload/
+          ls -lh Echo.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Echo
+          path: Echo.ipa
+          retention-days: 7
