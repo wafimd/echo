@@ -29,7 +29,7 @@ class YouTubeService {
         req.httpBody = try JSONSerialization.data(withJSONObject: [
             "context": context,
             "query": query,
-            "params": "EgIQAQ==" // videos only, no channels or playlists
+            "params": "EgIQAQ=="
         ])
 
         let (data, _) = try await URLSession.shared.data(for: req)
@@ -42,17 +42,18 @@ class YouTubeService {
 
         var results: [SearchResult] = []
         for section in contents {
-            let items = (section["itemSectionRenderer"] as? [String: Any])?
-                ["contents"] as? [[String: Any]] ?? []
+            let sectionRenderer = section["itemSectionRenderer"] as? [String: Any]
+            let items = sectionRenderer?["contents"] as? [[String: Any]] ?? []
             for item in items {
-                guard let vr = item["videoRenderer"] as? [String: Any],
-                      let videoId = vr["videoId"] as? String,
-                      let title = ((vr["title"] as? [String: Any])?["runs"] as? [[String: Any]])?
-                          .first?["text"] as? String else { continue }
-                let artist = ((vr["ownerText"] as? [String: Any])?["runs"] as? [[String: Any]])?
-                    .first?["text"] as? String ?? ""
-                let thumbs = (vr["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
-                let thumbURL = (thumbs?.last?["url"] as? String).flatMap { URL(string: $0) }
+                guard let vr = item["videoRenderer"] as? [String: Any] else { continue }
+                guard let videoId = vr["videoId"] as? String else { continue }
+                let titleRuns = (vr["title"] as? [String: Any])?["runs"] as? [[String: Any]]
+                guard let title = titleRuns?.first?["text"] as? String else { continue }
+                let ownerRuns = (vr["ownerText"] as? [String: Any])?["runs"] as? [[String: Any]]
+                let artist = ownerRuns?.first?["text"] as? String ?? ""
+                let thumbList = (vr["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
+                let thumbStr = thumbList?.last?["url"] as? String
+                let thumbURL = thumbStr.flatMap { URL(string: $0) }
                 results.append(SearchResult(id: videoId, title: title, artist: artist, thumbnailURL: thumbURL))
             }
         }
