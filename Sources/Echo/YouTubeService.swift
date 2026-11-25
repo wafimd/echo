@@ -35,11 +35,10 @@ class YouTubeService {
         let (data, _) = try await URLSession.shared.data(for: req)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
 
-        let sections = ((json["contents"] as? [String: Any])?
-            ["twoColumnSearchResultsRenderer"] as? [String: Any])?
-            ["primaryContents"] as? [String: Any]
-        let contents = (sections?["sectionListRenderer"] as? [String: Any])?
-            ["contents"] as? [[String: Any]] ?? []
+        let twoCol = (json["contents"] as? [String: Any])?["twoColumnSearchResultsRenderer"] as? [String: Any]
+        let primary = twoCol?["primaryContents"] as? [String: Any]
+        let sectionList = primary?["sectionListRenderer"] as? [String: Any]
+        let contents = sectionList?["contents"] as? [[String: Any]] ?? []
 
         var results: [SearchResult] = []
         for section in contents {
