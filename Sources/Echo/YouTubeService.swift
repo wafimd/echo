@@ -33,52 +33,69 @@ class YouTubeService {
     }
 
     func streamURL(videoId: String) async throws -> URL {
-        // Try multiple clients in order — iOS client often returns direct URLs,
-        // Android Music is the most reliable fallback.
-        let clients: [[String: Any]] = [
-            ["clientName": "IOS", "clientVersion": "19.29.1", "deviceModel": "iPhone16,2",
-             "osName": "iPhone OS", "osVersion": "17.5.1"],
-            ["clientName": "ANDROID_MUSIC", "clientVersion": "7.11.50",
-             "androidSdkVersion": 30, "osName": "Android", "osVersion": "11"],
-            ["clientName": "IOS_MUSIC", "clientVersion": "7.08.2",
-             "deviceModel": "iPhone16,2", "osName": "iPhone OS", "osVersion": "17.5.1"],
+        let clients: [(body: [String: Any], headers: [String: String])] = [
+            // TV embedded player — most reliable for direct URLs, bypasses most restrictions
+            (body: [
+                "videoId": videoId,
+                "context": [
+                    "client": ["clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER", "clientVersion": "2.0"],
+                    "thirdParty": ["embedUrl": "https://www.youtube.com/"]
+                ]
+            ], headers: [:]),
+            // iOS client
+            (body: [
+                "videoId": videoId,
+                "context": ["client": [
+                    "clientName": "IOS", "clientVersion": "19.29.1",
+                    "deviceModel": "iPhone16,2", "osName": "iPhone OS", "osVersion": "17.5.1"
+                ]]
+            ], headers: ["User-Agent": "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)"]),
+            // Android Music client
+            (body: [
+                "videoId": videoId,
+                "context": ["client": [
+                    "clientName": "ANDROID_MUSIC", "clientVersion": "7.11.50",
+                    "androidSdkVersion": 30
+                ]]
+            ], headers: ["User-Agent": "com.google.android.apps.youtube.music/7.11.50 (Linux; U; Android 11)"]),
         ]
 
-        for client in clients {
-            if let url = try? await resolveStream(videoId: videoId, client: client) {
+        for (body, headers) in clients {
+            if let url = try? await resolveStream(body: body, extraHeaders: headers) {
                 return url
             }
         }
-        throw URLError(.cannotFindHost)
+        throw NSError(domain: "Echo", code: 0, userInfo: [NSLocalizedDescriptionKey: "No playable stream found. YouTube may have restricted this video."])
     }
 
-    private func resolveStream(videoId: String, client: [String: Any]) async throws -> URL {
+    private func resolveStream(body: [String: Any], extraHeaders: [String: String]) async throws -> URL {
         guard let endpoint = URL(string: "https://www.youtube.com/youtubei/v1/player") else { throw URLError(.badURL) }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: Any] = [
-            "videoId": videoId,
-            "context": ["client": client]
-        ]
+        for (k, v) in extraHeaders { request.setValue(v, forHTTPHeaderField: k) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, _) = try await URLSession.shared.data(for: request)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let streaming = json["streamingData"] as? [String: Any],
-              let formats = streaming["adaptiveFormats"] as? [[String: Any]] else {
+              let streaming = json["streamingData"] as? [String: Any] else {
             throw URLError(.cannotParseResponse)
         }
 
-        let audioFormats = formats
-            .filter { ($0["mimeType"] as? String ?? "").hasPrefix("audio/") }
+        // Check adaptiveFormats first (audio-only, better quality), then formats (combined)
+        let adaptive = (streaming["adaptiveFormats"] as? [[String: Any]]) ?? []
+        let combined = (streaming["formats"] as? [[String: Any]]) ?? []
+
+        let audioOnly = adaptive
+            .filter { ($0["mimeType"] as? String ?? "").hasPrefix("audio/") && $0["url"] is String }
+            .sorted { ($0["bitrate"] as? Int ?? 0) > ($1["bitrate"] as? Int ?? 0) }
+
+        let fallback = combined
             .filter { $0["url"] is String }
             .sorted { ($0["bitrate"] as? Int ?? 0) > ($1["bitrate"] as? Int ?? 0) }
 
-        guard let best = audioFormats.first,
-              let urlString = best["url"] as? String,
-              let streamURL = URL(string: urlString) else {
+        let best = audioOnly.first ?? fallback.first
+        guard let urlString = best?["url"] as? String, let streamURL = URL(string: urlString) else {
             throw URLError(.cannotFindHost)
         }
         return streamURL
