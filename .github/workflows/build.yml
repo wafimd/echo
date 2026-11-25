@@ -38,8 +38,10 @@ jobs:
 
       - name: Package IPA
         run: |
+          APP=$(find Echo.xcarchive -name "*.app" -type d | head -1)
+          echo "Found: $APP"
           mkdir -p Payload
-          cp -r Echo.xcarchive/Products/Applications/Echo.app Payload/
+          cp -r "$APP" Payload/
           zip -qr Echo.ipa Payload/
           ls -lh Echo.ipa
 
