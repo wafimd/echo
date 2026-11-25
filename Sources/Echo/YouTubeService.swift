@@ -11,57 +11,88 @@ class YouTubeService {
     static let shared = YouTubeService()
     private init() {}
 
-    private let apiKey = "YOUR_API_KEY"
-
-    func search(query: String) async throws -> [SearchResult] {
-        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        let urlStr = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&maxResults=25&q=\(encoded)&key=\(apiKey)"
-        guard let url = URL(string: urlStr) else { throw URLError(.badURL) }
-
-        let (data, _) = try await URLSession.shared.data(from: url)
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let items = json["items"] as? [[String: Any]] else { return [] }
-
-        return items.compactMap { item -> SearchResult? in
-            guard let videoId = (item["id"] as? [String: Any])?["videoId"] as? String,
-                  let snippet = item["snippet"] as? [String: Any],
-                  let title = snippet["title"] as? String else { return nil }
-            let channel = snippet["channelTitle"] as? String ?? ""
-            let thumbStr = ((snippet["thumbnails"] as? [String: Any])?["high"] as? [String: Any])?["url"] as? String
-            return SearchResult(id: videoId, title: title, artist: channel, thumbnailURL: thumbStr.flatMap { URL(string: $0) })
-        }
+    private let baseURL = "https://www.youtube.com/youtubei/v1"
+    private var context: [String: Any] {
+        ["client": [
+            "clientName": "WEB",
+            "clientVersion": "2.20231121.08.00",
+            "hl": "en",
+            "gl": "US"
+        ]]
     }
 
-    // Piped public instances — tried in order until one works
-    private let pipedInstances = [
-        "https://pipedapi.kavin.rocks",
-        "https://piped-api.garudalinux.org",
-        "https://api.piped.projectsegfau.lt",
-    ]
+    func search(query: String) async throws -> [SearchResult] {
+        guard let url = URL(string: "\(baseURL)/search") else { throw URLError(.badURL) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "context": context,
+            "query": query,
+            "params": "EgIQAQ==" // videos only, no channels or playlists
+        ])
 
-    func streamURL(videoId: String) async throws -> URL {
-        var lastError: Error = URLError(.cannotFindHost)
+        let (data, _) = try await URLSession.shared.data(for: req)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
 
-        for instance in pipedInstances {
-            guard let url = URL(string: "\(instance)/streams/\(videoId)") else { continue }
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
-                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let streams = json["audioStreams"] as? [[String: Any]] else { continue }
+        let sections = ((json["contents"] as? [String: Any])?
+            ["twoColumnSearchResultsRenderer"] as? [String: Any])?
+            ["primaryContents"] as? [String: Any]
+        let contents = (sections?["sectionListRenderer"] as? [String: Any])?
+            ["contents"] as? [[String: Any]] ?? []
 
-                let best = streams
-                    .filter { $0["url"] is String }
-                    .sorted { ($0["bitrate"] as? Int ?? 0) > ($1["bitrate"] as? Int ?? 0) }
-                    .first
-
-                if let urlString = best?["url"] as? String, let streamURL = URL(string: urlString) {
-                    return streamURL
-                }
-            } catch {
-                lastError = error
+        var results: [SearchResult] = []
+        for section in contents {
+            let items = (section["itemSectionRenderer"] as? [String: Any])?
+                ["contents"] as? [[String: Any]] ?? []
+            for item in items {
+                guard let vr = item["videoRenderer"] as? [String: Any],
+                      let videoId = vr["videoId"] as? String,
+                      let title = ((vr["title"] as? [String: Any])?["runs"] as? [[String: Any]])?
+                          .first?["text"] as? String else { continue }
+                let artist = ((vr["ownerText"] as? [String: Any])?["runs"] as? [[String: Any]])?
+                    .first?["text"] as? String ?? ""
+                let thumbs = (vr["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
+                let thumbURL = (thumbs?.last?["url"] as? String).flatMap { URL(string: $0) }
+                results.append(SearchResult(id: videoId, title: title, artist: artist, thumbnailURL: thumbURL))
             }
         }
-        throw lastError
+        return results
+    }
+
+    func streamURL(videoId: String) async throws -> URL {
+        guard let url = URL(string: "\(baseURL)/player") else { throw URLError(.badURL) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("https://www.youtube.com", forHTTPHeaderField: "Origin")
+        req.setValue("https://www.youtube.com/watch?v=\(videoId)", forHTTPHeaderField: "Referer")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "context": context,
+            "videoId": videoId,
+            "contentCheckOk": true,
+            "racyCheckOk": true
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let streaming = json["streamingData"] as? [String: Any],
+              let formats = streaming["adaptiveFormats"] as? [[String: Any]] else {
+            throw URLError(.cannotParseResponse)
+        }
+
+        // audio/mp4 (AAC) only — iOS does not support audio/webm (Opus)
+        let best = formats
+            .filter { ($0["mimeType"] as? String)?.contains("audio/mp4") == true }
+            .filter { $0["url"] is String }
+            .sorted { ($0["bitrate"] as? Int ?? 0) > ($1["bitrate"] as? Int ?? 0) }
+            .first
+
+        guard let urlStr = best?["url"] as? String, let streamURL = URL(string: urlStr) else {
+            throw URLError(.cannotFindHost)
+        }
+        return streamURL
     }
 }
